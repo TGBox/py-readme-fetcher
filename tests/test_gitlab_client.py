@@ -161,3 +161,17 @@ def test_fetch_readme_empty_repo():
         default_branch=None,
     )
     assert client.fetch_readme(empty_proj) is None
+
+
+def test_verify_ssl_setting():
+    mock_session = MagicMock(spec=requests.Session)
+    mock_res = MagicMock()
+    mock_res.status_code = 200
+    mock_res.json.return_value = []
+    mock_session.get.return_value = mock_res
+
+    client = GitLabClient(verify_ssl=False, session=mock_session)
+    assert client.verify_ssl is False
+
+    client.get_group_projects("my-group")
+    assert mock_session.get.call_args[1]["verify"] is False

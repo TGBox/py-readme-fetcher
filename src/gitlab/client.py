@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import requests
+import urllib3
 
 
 def compute_safe_filename(path_with_namespace: str, readme_filename: str = "README.md") -> str:
@@ -55,12 +56,17 @@ class GitLabClient:
         base_url: str = "https://gitlab.com",
         private_token: str = "",
         timeout: float = 20.0,
+        verify_ssl: bool = True,
         session: requests.Session | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.private_token = private_token.strip()
         self.timeout = timeout
+        self.verify_ssl = verify_ssl
         self.session = session or requests.Session()
+
+        if not self.verify_ssl:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     def _get_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {
@@ -68,8 +74,34 @@ class GitLabClient:
             "User-Agent": "py-readme-fetcher/0.1.0",
         }
         if self.private_token:
-            headers["PRIVATE-TOKEN"] = self.private_token
+            if self.private_token.lower().startswith("bearer "):
+                headers["Authorization"] = self.private_token
+            else:
+                headers["PRIVATE-TOKEN"] = self.private_token
         return headers
+
+    @staticmethod
+    def _raise_for_status_with_detail(response: requests.Response) -> None:
+        """Raise HTTPError enriched with GitLab JSON or text response body."""
+        if response.ok:
+            return
+
+        detail = ""
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                detail = body.get("message") or body.get("error") or ""
+                if isinstance(detail, dict):
+                    detail = ", ".join(f"{k}: {v}" for k, v in detail.items())
+            elif isinstance(body, list):
+                detail = ", ".join(str(x) for x in body)
+        except (ValueError, TypeError, KeyError):
+            detail = response.text[:300] if response.text else ""
+
+        error_msg = f"{response.status_code} {response.reason}"
+        if detail:
+            error_msg += f" — {detail}"
+        raise requests.HTTPError(error_msg, response=response)
 
     def get_group_projects(
         self,
@@ -101,8 +133,9 @@ class GitLabClient:
                 headers=headers,
                 params={**params, "page": page},
                 timeout=self.timeout,
+                verify=self.verify_ssl,
             )
-            response.raise_for_status()
+            self._raise_for_status_with_detail(response)
 
             total_pages_header = response.headers.get("X-Total-Pages")
             total_pages = (
@@ -190,12 +223,13 @@ class GitLabClient:
                     headers=headers,
                     params={"ref": branch},
                     timeout=self.timeout,
+                    verify=self.verify_ssl,
                 )
                 if response.status_code == 200:
                     return (filename, response.content)
                 if response.status_code == 404:
                     continue
-                response.raise_for_status()
+                self._raise_for_status_with_detail(response)
             except requests.RequestException:
                 # In case of 404 or connection error for a candidate, continue or abort
                 continue

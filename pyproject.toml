@@ -1,6 +1,6 @@
 [project]
 name = "py-readme-fetcher"
-version = "0.2.1"
+version = "0.2.2"
 description = "A python app to fetch all README.md files of all the repositories from a given GitLab Group."
 requires-python = ">=3.11"
 license = { text = "MIT" }

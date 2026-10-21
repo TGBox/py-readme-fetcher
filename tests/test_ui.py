@@ -124,6 +124,7 @@ def test_main_window_settings_persistence(qtbot, tmp_path):
     window.group_input.setText("custom-group/sub")
     window.output_dir_input.setText(str(tmp_path / "custom_readmes"))
     window.save_token_cb.setChecked(True)
+    window.ssl_verify_cb.setChecked(False)
     window.token_input.setText("mock-token-test-123")
 
     window._save_settings()
@@ -136,4 +137,5 @@ def test_main_window_settings_persistence(qtbot, tmp_path):
     assert window2.group_input.text() == "custom-group/sub"
     assert window2.output_dir_input.text() == str(tmp_path / "custom_readmes")
     assert window2.save_token_cb.isChecked()
+    assert window2.ssl_verify_cb.isChecked() is False
     assert window2.token_input.text() == "mock-token-test-123"

@@ -105,6 +105,13 @@ class MainWindow(QMainWindow):
         )
         row1.addWidget(self.save_token_cb)
 
+        self.ssl_verify_cb = QCheckBox("SSL prüfen")
+        self.ssl_verify_cb.setChecked(True)
+        self.ssl_verify_cb.setToolTip(
+            "SSL-Zertifikate verifizieren. Deaktivieren bei internen Firmen-Servern mit selbstsignierten Zertifikaten."
+        )
+        row1.addWidget(self.ssl_verify_cb)
+
         config_layout.addLayout(row1)
 
         # Row 2: Group ID, Subgroups and Output Dir
@@ -330,6 +337,8 @@ class MainWindow(QMainWindow):
         if save_token:
             self.token_input.setText(self.settings.value("private_token", "", type=str))
 
+        self.ssl_verify_cb.setChecked(self.settings.value("verify_ssl", True, type=bool))
+
     def _save_settings(self) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("is_maximized", self.isMaximized())
@@ -339,6 +348,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("output_dir", self.output_dir_input.text().strip())
         self.settings.setValue("include_subgroups", self.subgroups_cb.isChecked())
         self.settings.setValue("save_token", self.save_token_cb.isChecked())
+        self.settings.setValue("verify_ssl", self.ssl_verify_cb.isChecked())
 
         if self.save_token_cb.isChecked():
             self.settings.setValue("private_token", self.token_input.text().strip())
@@ -349,6 +359,7 @@ class MainWindow(QMainWindow):
         return GitLabClient(
             base_url=self.url_input.text().strip() or "https://gitlab.com",
             private_token=self.token_input.text().strip(),
+            verify_ssl=self.ssl_verify_cb.isChecked(),
         )
 
     def _start_scanning(self) -> None:
@@ -619,11 +630,29 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
 
+        hint = ""
+        if "403" in error_msg or "Forbidden" in error_msg:
+            hint = (
+                "\n\n💡 Mögliche Ursachen für '403 Forbidden':\n"
+                "1. Token-Scope: Dein Access Token benötigt zwingend die Berechtigung (Scope) 'read_api' (oder 'api'). Falls beim Erstellen nur 'read_repository' angehakt war, blockiert GitLab den Gruppen-Endpunkt.\n"
+                "2. Berechtigung auf die Gruppe: Prüfe, ob dein GitLab-Konto mindestens Leserechte (Reporter / Developer) auf diese Gruppe hat.\n"
+                "3. Untergruppen: Deaktiviere testweise 'Untergruppen einbeziehen'."
+            )
+        elif "certificate verify failed" in error_msg or "SSLError" in error_msg:
+            hint = (
+                "\n\n💡 Tipp: Dieser GitLab-Server verwendet ein selbstsigniertes oder internes Unternehmenszertifikat.\n"
+                "Deaktiviere die Option 'SSL prüfen' oben in der Konfiguration und starte den Scan erneut."
+            )
+        elif "401" in error_msg or "Unauthorized" in error_msg:
+            hint = "\n\n💡 Tipp: Das angegebene Access Token ist ungültig oder abgelaufen."
+        elif "404" in error_msg or "Not Found" in error_msg:
+            hint = "\n\n💡 Tipp: Die angegebene Gruppe oder der Pfad wurde auf diesem GitLab-Server nicht gefunden."
+
         self.status_label.setText(f"Fehler: {error_msg}")
         QMessageBox.critical(
             self,
             "Fehler aufgetreten",
-            f"Ein Fehler ist aufgetreten:\n\n{error_msg}",
+            f"Ein Fehler ist aufgetreten:\n\n{error_msg}{hint}",
         )
 
     def closeEvent(self, event) -> None:
