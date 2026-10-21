@@ -54,9 +54,20 @@ class DownloadWorker(QThread):
                     )
                     continue
 
-                if self.download_all_readmes and project.readme_files:
+                files_to_download: list[str] = list(project.readme_files)
+
+                # If downloading all READMEs, ensure full tree discovery if files_to_download has <= 1 entry
+                if self.download_all_readmes and len(files_to_download) <= 1:
+                    discovered = self.client.discover_project_readmes(
+                        project=project,
+                        cancel_check=self.isInterruptionRequested,
+                    )
+                    if discovered:
+                        files_to_download = discovered
+
+                if self.download_all_readmes and files_to_download:
                     saved_files: list[str] = []
-                    for file_path in project.readme_files:
+                    for file_path in files_to_download:
                         if self.isInterruptionRequested():
                             break
                         content = self.client.fetch_file_content(
@@ -96,10 +107,40 @@ class DownloadWorker(QThread):
                         )
                 else:
                     # Single primary README download (with automatic fallback to subfolder)
-                    readme_result = self.client.fetch_readme(
-                        project=project,
-                        cancel_check=self.isInterruptionRequested,
+                    target_candidate: str | None = (
+                        files_to_download[0] if files_to_download else None
                     )
+                    readme_result = None
+
+                    if target_candidate:
+                        content = self.client.fetch_file_content(
+                            project=project,
+                            file_path=target_candidate,
+                            cancel_check=self.isInterruptionRequested,
+                        )
+                        if content is not None:
+                            readme_result = (target_candidate, content)
+
+                    if readme_result is None:
+                        readme_result = self.client.fetch_readme(
+                            project=project,
+                            cancel_check=self.isInterruptionRequested,
+                        )
+
+                    if readme_result is None:
+                        # Full discovery fallback if root search failed
+                        discovered = self.client.discover_project_readmes(
+                            project=project,
+                            cancel_check=self.isInterruptionRequested,
+                        )
+                        if discovered:
+                            sub_content = self.client.fetch_file_content(
+                                project=project,
+                                file_path=discovered[0],
+                                cancel_check=self.isInterruptionRequested,
+                            )
+                            if sub_content is not None:
+                                readme_result = (discovered[0], sub_content)
 
                     if self.isInterruptionRequested():
                         break

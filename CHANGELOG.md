@@ -1,8 +1,12 @@
 # Changelog
 
+## SemVer v0.5.0
+
+- 2026-10-21 (87ac5e9): fix: update recursion search logic to find all nested readme files correctly
+
 ## SemVer v0.4.0
 
-- 2026-10-21 (53364b3): feat: add new option to recursively search the project folders for nested README files, that might only describe a portion of the repository, but are essential to understanding it completely
+- 2026-10-21 (76b54e2): feat: add new option to recursively search the project folders for nested README files, that might only describe a portion of the repository, but are essential to understanding it completely
 
 ## SemVer v0.2.2
 

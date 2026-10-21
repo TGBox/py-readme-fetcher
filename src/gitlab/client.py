@@ -236,9 +236,9 @@ class GitLabClient:
         recursive: bool = True,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[dict]:
-        """Fetch repository tree items via GitLab API v4."""
+        """Fetch repository tree items via GitLab API v4 supporting Link header and keyset pagination."""
         encoded_id = urllib.parse.quote(str(project_id).strip(), safe="")
-        url = f"{self.base_url}/api/v4/projects/{encoded_id}/repository/tree"
+        next_url: str | None = f"{self.base_url}/api/v4/projects/{encoded_id}/repository/tree"
         headers = self._get_headers()
         params: dict[str, str | int] = {
             "ref": ref,
@@ -250,17 +250,19 @@ class GitLabClient:
 
         all_items: list[dict] = []
         page = 1
-        max_pages = 20
+        max_pages = 100
 
-        while page <= max_pages:
+        while next_url and page <= max_pages:
             if cancel_check and cancel_check():
                 break
 
             try:
+                # Use params on the initial request; subsequent requests follow next_url from Link header
+                req_params = params if page == 1 else None
                 response = self.session.get(
-                    url,
+                    next_url,
                     headers=headers,
-                    params={**params, "page": page},
+                    params=req_params,
                     timeout=self.timeout,
                     verify=self.verify_ssl,
                 )
@@ -275,14 +277,19 @@ class GitLabClient:
                 break
 
             all_items.extend(items)
+            page += 1
 
-            next_page = response.headers.get("X-Next-Page")
-            if next_page and next_page.strip():
-                page = int(next_page)
+            # Check next page via RFC 5988 Link header (works for keyset and offset pagination)
+            link_next = response.links.get("next", {}).get("url")
+            if link_next:
+                next_url = link_next
             else:
-                if len(items) < 100:
+                next_page_hdr = response.headers.get("X-Next-Page")
+                if next_page_hdr and next_page_hdr.strip():
+                    next_url = f"{self.base_url}/api/v4/projects/{encoded_id}/repository/tree"
+                    params["page"] = int(next_page_hdr)
+                else:
                     break
-                page += 1
 
         return all_items
 
@@ -291,7 +298,7 @@ class GitLabClient:
         project: GitLabProject,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[str]:
-        """Find all README files in project repository, prioritizing root README."""
+        """Find all README files in project repository, prioritizing root README and checking subdirectories."""
         if not project.has_default_branch or project.empty_repo:
             return []
 
@@ -304,11 +311,68 @@ class GitLabClient:
         )
 
         found: list[str] = []
+        subdirectories: list[str] = []
+
         for item in items:
-            if item.get("type") == "blob":
-                file_path = item.get("path", "")
-                if file_path and is_readme_file(file_path):
+            item_type = item.get("type")
+            file_path = item.get("path", "")
+            if not file_path:
+                continue
+
+            if item_type == "blob":
+                if is_readme_file(file_path) and file_path not in found:
                     found.append(file_path)
+            elif item_type == "tree":
+                parts = file_path.replace("\\", "/").strip("/").split("/")
+                if not any(
+                    p.lower() in IGNORED_DIR_NAMES or p.lower().endswith(".egg-info") for p in parts
+                ):
+                    subdirectories.append(file_path)
+
+        # Fallback inspection:
+        # If any discovered subdirectory does not yet have a found README,
+        # inspect it directly in case recursive=true was truncated by GitLab
+        for dir_path in subdirectories:
+            if cancel_check and cancel_check():
+                break
+            clean_dir = dir_path.replace("\\", "/").strip("/")
+            has_readme_in_dir = any(f.startswith(f"{clean_dir}/") for f in found)
+            if not has_readme_in_dir:
+                # Query sub-tree for this specific path
+                sub_items = self.get_repository_tree(
+                    project_id=project.id,
+                    ref=branch,
+                    path=clean_dir,
+                    recursive=True,
+                    cancel_check=cancel_check,
+                )
+                found_in_subtree = False
+                for sub_item in sub_items:
+                    if sub_item.get("type") == "blob":
+                        sub_file = sub_item.get("path", "")
+                        if sub_file and is_readme_file(sub_file) and sub_file not in found:
+                            found.append(sub_file)
+                            found_in_subtree = True
+
+                if not found_in_subtree:
+                    # Direct probe for standard README candidates in directory
+                    for cand in self.DEFAULT_README_CANDIDATES:
+                        probe_path = f"{clean_dir}/{cand}"
+                        content = self.fetch_file_content(
+                            project, probe_path, cancel_check=cancel_check
+                        )
+                        if content is not None:
+                            if probe_path not in found:
+                                found.append(probe_path)
+                            break
+
+        # Also probe standard root README if none was found at the root
+        if not any("/" not in f and "\\" not in f for f in found):
+            root_readme = self.fetch_readme(project, cancel_check=cancel_check)
+            if root_readme is not None:
+                root_name = root_readme[0]
+                if root_name not in found:
+                    found.insert(0, root_name)
 
         def sort_key(p: str) -> tuple[int, int, str]:
             parts = p.replace("\\", "/").strip("/").split("/")

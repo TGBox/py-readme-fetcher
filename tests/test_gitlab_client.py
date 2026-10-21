@@ -256,3 +256,90 @@ def test_fetch_file_content_url_encoded():
 
     call_url = mock_session.get.call_args[0][0]
     assert "client%2Fsub%2FREADME.md" in call_url
+
+
+def test_get_repository_tree_link_header_pagination():
+    mock_session = MagicMock(spec=requests.Session)
+    res_page1 = MagicMock()
+    res_page1.status_code = 200
+    res_page1.links = {
+        "next": {
+            "url": "https://gitlab.example.com/api/v4/projects/42/repository/tree?pagination=keyset&page_token=abc"
+        }
+    }
+    res_page1.headers = {}
+    res_page1.json.return_value = [
+        {"type": "blob", "path": "file1.txt"},
+    ]
+
+    res_page2 = MagicMock()
+    res_page2.status_code = 200
+    res_page2.links = {}
+    res_page2.headers = {}
+    res_page2.json.return_value = [
+        {"type": "blob", "path": "file2.txt"},
+    ]
+
+    mock_session.get.side_effect = [res_page1, res_page2]
+
+    client = GitLabClient(base_url="https://gitlab.example.com", session=mock_session)
+    items = client.get_repository_tree(project_id=42, ref="main", recursive=True)
+
+    assert len(items) == 2
+    assert items[0]["path"] == "file1.txt"
+    assert items[1]["path"] == "file2.txt"
+    assert mock_session.get.call_count == 2
+    # Second call should follow the exact link URL
+    assert mock_session.get.call_args_list[1][0][0] == (
+        "https://gitlab.example.com/api/v4/projects/42/repository/tree?pagination=keyset&page_token=abc"
+    )
+
+
+def test_discover_project_readmes_deep_subfolder_probe():
+    """Verify that when root tree only lists directory trees (e.g. web, svc), subfolders are inspected."""
+    mock_session = MagicMock(spec=requests.Session)
+
+    # Root tree call: returns root README.md and directory trees for 'web' and 'svc'
+    res_root = MagicMock()
+    res_root.status_code = 200
+    res_root.links = {}
+    res_root.headers = {}
+    res_root.json.return_value = [
+        {"type": "blob", "path": "README.md"},
+        {"type": "tree", "path": "web"},
+        {"type": "tree", "path": "svc"},
+    ]
+
+    # web tree call: returns web/README.md
+    res_web = MagicMock()
+    res_web.status_code = 200
+    res_web.links = {}
+    res_web.headers = {}
+    res_web.json.return_value = [
+        {"type": "blob", "path": "web/README.md"},
+    ]
+
+    # svc tree call: returns svc/README.md
+    res_svc = MagicMock()
+    res_svc.status_code = 200
+    res_svc.links = {}
+    res_svc.headers = {}
+    res_svc.json.return_value = [
+        {"type": "blob", "path": "svc/README.md"},
+    ]
+
+    mock_session.get.side_effect = [res_root, res_web, res_svc]
+
+    client = GitLabClient(base_url="https://gitlab.example.com", session=mock_session)
+    project = GitLabProject(
+        id=99,
+        name="data-chat",
+        path_with_namespace="org/data-chat",
+        default_branch="main",
+    )
+
+    readmes = client.discover_project_readmes(project)
+    assert "README.md" in readmes
+    assert "web/README.md" in readmes
+    assert "svc/README.md" in readmes
+    assert readmes[0] == "README.md"

@@ -94,6 +94,7 @@ def test_download_worker_subfolder_readme(qtbot, tmp_path):
         default_branch="main",
         readme_files=("client/README.md",),
     )
+    mock_client.fetch_file_content.return_value = b"# Client Documentation"
     mock_client.fetch_readme.return_value = ("client/README.md", b"# Client Documentation")
 
     worker = DownloadWorker(
