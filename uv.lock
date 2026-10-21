@@ -235,7 +235,7 @@ wheels = [
 
 [[package]]
 name = "py-readme-fetcher"
-version = "0.2.2"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "pyside6" },

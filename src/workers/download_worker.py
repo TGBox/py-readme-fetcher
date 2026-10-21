@@ -20,12 +20,14 @@ class DownloadWorker(QThread):
         client: GitLabClient,
         projects: list[GitLabProject],
         output_dir: Path,
+        download_all_readmes: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.client = client
         self.projects = projects
         self.output_dir = output_dir
+        self.download_all_readmes = download_all_readmes
 
     def run(self) -> None:
         """Execute download loop over selected projects."""
@@ -52,34 +54,76 @@ class DownloadWorker(QThread):
                     )
                     continue
 
-                readme_result = self.client.fetch_readme(
-                    project=project,
-                    cancel_check=self.isInterruptionRequested,
-                )
+                if self.download_all_readmes and project.readme_files:
+                    saved_files: list[str] = []
+                    for file_path in project.readme_files:
+                        if self.isInterruptionRequested():
+                            break
+                        content = self.client.fetch_file_content(
+                            project=project,
+                            file_path=file_path,
+                            cancel_check=self.isInterruptionRequested,
+                        )
+                        if content is not None:
+                            target_file = self.output_dir / project.get_relative_target_path(
+                                file_path
+                            )
+                            target_file.parent.mkdir(parents=True, exist_ok=True)
+                            target_file.write_bytes(content)
+                            saved_files.append(file_path)
 
-                if self.isInterruptionRequested():
-                    break
+                    if self.isInterruptionRequested():
+                        break
 
-                if readme_result is not None:
-                    filename, content = readme_result
-                    safe_name = project.get_safe_filename(filename)
-                    target_file = self.output_dir / safe_name
-                    target_file.write_bytes(content)
-                    successful += 1
-                    self.item_completed.emit(
-                        project,
-                        safe_name,
-                        True,
-                        f"Erfolgreich gespeichert ({len(content)} Bytes)",
-                    )
+                    if saved_files:
+                        successful += 1
+                        display_text = (
+                            f"{len(saved_files)} README{'s' if len(saved_files) > 1 else ''}"
+                        )
+                        self.item_completed.emit(
+                            project,
+                            display_text,
+                            True,
+                            f"Erfolgreich gespeichert ({display_text})",
+                        )
+                    else:
+                        failed += 1
+                        self.item_completed.emit(
+                            project,
+                            "",
+                            False,
+                            "Keine README-Datei gefunden",
+                        )
                 else:
-                    failed += 1
-                    self.item_completed.emit(
-                        project,
-                        "",
-                        False,
-                        "Keine README-Datei gefunden",
+                    # Single primary README download (with automatic fallback to subfolder)
+                    readme_result = self.client.fetch_readme(
+                        project=project,
+                        cancel_check=self.isInterruptionRequested,
                     )
+
+                    if self.isInterruptionRequested():
+                        break
+
+                    if readme_result is not None:
+                        filename, content = readme_result
+                        target_file = self.output_dir / project.get_relative_target_path(filename)
+                        target_file.parent.mkdir(parents=True, exist_ok=True)
+                        target_file.write_bytes(content)
+                        successful += 1
+                        self.item_completed.emit(
+                            project,
+                            filename,
+                            True,
+                            f"Erfolgreich gespeichert ({len(content)} Bytes)",
+                        )
+                    else:
+                        failed += 1
+                        self.item_completed.emit(
+                            project,
+                            "",
+                            False,
+                            "Keine README-Datei gefunden",
+                        )
 
             self.finished.emit(successful, failed)
         except Exception as exc:  # noqa: BLE001

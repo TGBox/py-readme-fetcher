@@ -125,6 +125,8 @@ def test_main_window_settings_persistence(qtbot, tmp_path):
     window.output_dir_input.setText(str(tmp_path / "custom_readmes"))
     window.save_token_cb.setChecked(True)
     window.ssl_verify_cb.setChecked(False)
+    window.search_subfolders_cb.setChecked(False)
+    window.download_all_cb.setChecked(True)
     window.token_input.setText("mock-token-test-123")
 
     window._save_settings()
@@ -138,4 +140,46 @@ def test_main_window_settings_persistence(qtbot, tmp_path):
     assert window2.output_dir_input.text() == str(tmp_path / "custom_readmes")
     assert window2.save_token_cb.isChecked()
     assert window2.ssl_verify_cb.isChecked() is False
+    assert window2.search_subfolders_cb.isChecked() is False
+    assert window2.download_all_cb.isChecked() is True
     assert window2.token_input.text() == "mock-token-test-123"
+
+
+def test_main_window_multi_readme_selector(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    projects = [
+        GitLabProject(
+            id=1,
+            name="SingleDoc",
+            path_with_namespace="g/single",
+            default_branch="main",
+            readme_files=("README.md",),
+        ),
+        GitLabProject(
+            id=2,
+            name="MultiDoc",
+            path_with_namespace="g/multi",
+            default_branch="main",
+            readme_files=("README.md", "client/README.md", "docs/README.md"),
+        ),
+    ]
+
+    window._on_scan_finished(projects)
+
+    # Select project with single README -> selector should be hidden
+    window.table.selectRow(0)
+    assert window.readme_selector.isHidden()
+
+    # Select project with multiple READMEs -> selector should become visible
+    window.table.selectRow(1)
+    assert not window.readme_selector.isHidden()
+    assert window.readme_selector.count() == 3
+    assert window.readme_selector.itemText(0) == "README.md"
+    assert window.readme_selector.itemText(1) == "client/README.md"
+    assert window.readme_selector.itemText(2) == "docs/README.md"
+
+    # Status column texts
+    assert "✓ 1 README" in window.table.item(0, 3).text()
+    assert "✓ 3 READMEs gefunden" in window.table.item(1, 3).text()

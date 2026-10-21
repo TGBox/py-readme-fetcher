@@ -17,14 +17,18 @@ Eine moderne Python Desktop-Anwendung (PySide6 / Qt 6) zum Durchsuchen, Vorab-Pr
 - **Integrierte Markdown-Vorschau:**
   - Klicke auf ein beliebiges Projekt, um dessen README direkt in der Anwendung gerendert zu lesen (über nativen Rich-Text-Viewer).
   - Direktes Öffnen des Projekts im Browser per Knopfdruck.
-- **Smarte Dateierkennung:**
-  - Erkennt `README.md`, `readme.md`, `README.markdown`, `README.rst` sowie die in GitLab hinterlegte Standard-README.
-- **Flache Dateiablage:**
-  - Automatische Namensgenerierung nach dem Schema `{gruppe}_{untergruppe}_{projekt}_{dateiname}`, um Kollisionen zu verhindern.
+- **Smarte Dateierkennung & Unterordner-Suche:**
+  - Erkennt `README.md`, `readme.md`, `README.markdown`, `README.rst`, `README.txt` sowie in GitLab hinterlegte Standard-READMEs.
+  - **Rekursive Suche in Unterordnern:** Findet README-Dateien auch dann, wenn sie nicht im Root-Verzeichnis liegen (z. B. `data-chat/client/README.md`).
+  - **Multi-README-Vorschau:** Enthält ein Repository mehrere Dokumentationsdateien, kann in der Vorschau über ein Dropdown-Menü direkt zwischen ihnen gewechselt werden.
+  - **Intelligente Ordner-Filterung:** Abhängigkeits- und Build-Ordner wie `node_modules`, `vendor`, `.git`, `.venv`, `dist` oder `build` werden automatisch ignoriert.
+- **Hierarchische & kollisionsfreie Dateiablage:**
+  - Speichert heruntergeladene Dateien in projektbezogenen Verzeichnissen mit Spiegelung der Repository-Unterpfade: `{zielordner}/{gruppe_projekt}/{relativer_pfad}`.
+  - Ermöglicht den Download der primären README (mit automatischem Fallback auf Unterordner) oder optional aller gefundenen README-Dateien eines Projekts.
 - **Benutzerkomfort & Ergonomie:**
   - **Dark- & Light-Themes:** Hochkontrastierende, moderne Themes umschaltbar per Klick.
   - **Vollbildmodus:** Nahtloser Wechsel zwischen Fenster- und Vollbildansicht (Taste **F11**).
-  - **Persistenz (`QSettings`):** GitLab-URL, Gruppen-ID, Zielordner, Fenstergröße/-position und optional das Token (Passwortfeld mit Sichtbarkeits-Toggle) werden sitzungsübergreifend gespeichert.
+  - **Persistenz (`QSettings`):** GitLab-URL, Gruppen-ID, Zielordner, Such- und Download-Optionen, Fenstergröße/-position und optional das Token werden sitzungsübergreifend gespeichert.
   - **Thread-Sicherheit:** Alle Netzwerkanfragen laufen in dedizierten `QThread`-Workern; die Benutzeroberfläche bleibt jederzeit 100% flüssig.
 
 ---

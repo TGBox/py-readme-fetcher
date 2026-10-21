@@ -7,6 +7,7 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -136,6 +137,25 @@ class MainWindow(QMainWindow):
         row2.addWidget(browse_btn)
 
         config_layout.addLayout(row2)
+
+        # Row 3: Subfolder and Download Mode Options
+        row3 = QHBoxLayout()
+        self.search_subfolders_cb = QCheckBox("In Unterordnern nach READMEs suchen")
+        self.search_subfolders_cb.setChecked(True)
+        self.search_subfolders_cb.setToolTip(
+            "Durchsucht Repositories rekursiv auch nach README-Dateien in Unterverzeichnissen (z. B. data-chat/client/README.md)."
+        )
+        row3.addWidget(self.search_subfolders_cb)
+
+        self.download_all_cb = QCheckBox("Alle READMEs rekursiv laden")
+        self.download_all_cb.setChecked(False)
+        self.download_all_cb.setToolTip(
+            "Lädt alle gefundenen READMEs eines Projekts herunter statt nur der Haupt-README (mit automatischem Fallback)."
+        )
+        row3.addWidget(self.download_all_cb)
+        row3.addStretch()
+
+        config_layout.addLayout(row3)
         main_layout.addWidget(config_group)
 
         # 3. Action Buttons Bar
@@ -235,6 +255,16 @@ class MainWindow(QMainWindow):
         self.preview_title.setTextFormat(Qt.TextFormat.RichText)
         preview_header.addWidget(self.preview_title)
         preview_header.addStretch()
+
+        self.readme_selector_label = QLabel("Datei:")
+        self.readme_selector_label.setVisible(False)
+        preview_header.addWidget(self.readme_selector_label)
+
+        self.readme_selector = QComboBox()
+        self.readme_selector.setVisible(False)
+        self.readme_selector.setToolTip("README-Datei auswählen")
+        self.readme_selector.currentIndexChanged.connect(self._on_readme_selector_changed)
+        preview_header.addWidget(self.readme_selector)
 
         self.open_web_btn = QPushButton("🌐 In GitLab öffnen")
         self.open_web_btn.setEnabled(False)
@@ -338,6 +368,12 @@ class MainWindow(QMainWindow):
             self.token_input.setText(self.settings.value("private_token", "", type=str))
 
         self.ssl_verify_cb.setChecked(self.settings.value("verify_ssl", True, type=bool))
+        self.search_subfolders_cb.setChecked(
+            self.settings.value("search_subfolders", True, type=bool)
+        )
+        self.download_all_cb.setChecked(
+            self.settings.value("download_all_readmes", False, type=bool)
+        )
 
     def _save_settings(self) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
@@ -347,6 +383,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("group_id", self.group_input.text().strip())
         self.settings.setValue("output_dir", self.output_dir_input.text().strip())
         self.settings.setValue("include_subgroups", self.subgroups_cb.isChecked())
+        self.settings.setValue("search_subfolders", self.search_subfolders_cb.isChecked())
+        self.settings.setValue("download_all_readmes", self.download_all_cb.isChecked())
         self.settings.setValue("save_token", self.save_token_cb.isChecked())
         self.settings.setValue("verify_ssl", self.ssl_verify_cb.isChecked())
 
@@ -385,6 +423,7 @@ class MainWindow(QMainWindow):
             client=client,
             group_id=group_id,
             include_subgroups=self.subgroups_cb.isChecked(),
+            search_subfolders=self.search_subfolders_cb.isChecked(),
             parent=self,
         )
         self.active_worker.progress.connect(self._on_scan_progress)
@@ -410,7 +449,13 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
 
         count = len(projects)
-        self.status_label.setText(f"Scan abgeschlossen. {count} Projekte gefunden.")
+        total_readmes = sum(len(p.readme_files) for p in projects)
+        if self.search_subfolders_cb.isChecked():
+            self.status_label.setText(
+                f"Scan abgeschlossen. {count} Projekte gefunden, {total_readmes} README-Dateien entdeckt."
+            )
+        else:
+            self.status_label.setText(f"Scan abgeschlossen. {count} Projekte gefunden.")
 
     def _populate_table(self) -> None:
         self.table.setRowCount(0)
@@ -442,7 +487,19 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 2, branch_item)
 
             # Column 3: Status
-            status_text = "Bereit" if proj.has_default_branch else "Leeres Repo"
+            if not proj.has_default_branch or proj.empty_repo:
+                status_text = "Leeres Repo"
+            elif proj.readme_files:
+                if len(proj.readme_files) == 1:
+                    status_text = f"✓ 1 README ({proj.readme_files[0]})"
+                else:
+                    status_text = f"✓ {len(proj.readme_files)} READMEs gefunden"
+            else:
+                status_text = (
+                    "Bereit"
+                    if not self.search_subfolders_cb.isChecked()
+                    else "Keine README gefunden"
+                )
             status_item = QTableWidgetItem(status_text)
             status_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             self.table.setItem(row, 3, status_item)
@@ -484,6 +541,8 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.projects):
             self.preview_title.setText("<b>README Vorschau</b>")
             self.open_web_btn.setEnabled(False)
+            self.readme_selector_label.setVisible(False)
+            self.readme_selector.setVisible(False)
             self.preview_browser.clear()
             return
 
@@ -491,20 +550,60 @@ class MainWindow(QMainWindow):
         self.preview_title.setText(f"<b>README Vorschau:</b> {project.path_with_namespace}")
         self.open_web_btn.setEnabled(bool(project.web_url))
 
-        # Check if already downloaded locally
-        output_dir = Path(self.output_dir_input.text().strip())
-        local_candidates = [
-            output_dir / project.get_safe_filename(c)
-            for c in GitLabClient.DEFAULT_README_CANDIDATES
-        ]
-        for local_file in local_candidates:
-            if local_file.exists():
+        # Update readme selector combo box
+        self.readme_selector.blockSignals(True)
+        self.readme_selector.clear()
+        if project.readme_files:
+            for rf in project.readme_files:
+                self.readme_selector.addItem(rf, rf)
+            has_multiple = len(project.readme_files) > 1
+            self.readme_selector_label.setVisible(has_multiple)
+            self.readme_selector.setVisible(has_multiple)
+        else:
+            self.readme_selector_label.setVisible(False)
+            self.readme_selector.setVisible(False)
+        self.readme_selector.blockSignals(False)
+
+        selected_file = (
+            self.readme_selector.currentData() if self.readme_selector.count() > 0 else None
+        )
+        self._load_readme_preview(project, selected_file)
+
+    def _on_readme_selector_changed(self, index: int) -> None:
+        row = self.table.currentRow()
+        if 0 <= row < len(self.projects):
+            project = self.projects[row]
+            selected_file = self.readme_selector.itemData(index)
+            self._load_readme_preview(project, selected_file)
+
+    def _load_readme_preview(self, project: GitLabProject, file_path: str | None = None) -> None:
+        out_dir_str = self.output_dir_input.text().strip()
+        output_dir = Path(out_dir_str) if out_dir_str else Path.cwd() / "readmes"
+
+        # Check local cache (both hierarchical directory and flat legacy paths)
+        candidates_to_check: list[Path] = []
+        if file_path:
+            candidates_to_check.append(output_dir / project.get_relative_target_path(file_path))
+            candidates_to_check.append(output_dir / project.get_safe_filename(file_path))
+        if project.readme_files:
+            for rf in project.readme_files:
+                candidates_to_check.append(output_dir / project.get_relative_target_path(rf))
+                candidates_to_check.append(output_dir / project.get_safe_filename(rf))
+        for c in GitLabClient.DEFAULT_README_CANDIDATES:
+            candidates_to_check.append(output_dir / project.get_relative_target_path(c))
+            candidates_to_check.append(output_dir / project.get_safe_filename(c))
+
+        for local_file in candidates_to_check:
+            if local_file.is_file():
                 try:
                     content = local_file.read_text(encoding="utf-8", errors="replace")
                     self.preview_browser.setMarkdown(content)
-                    self.status_label.setText(
-                        f"README aus lokalem Cache geladen: {local_file.name}"
-                    )
+                    display_name = local_file.name
+                    try:
+                        display_name = str(local_file.relative_to(output_dir))
+                    except ValueError:
+                        pass
+                    self.status_label.setText(f"README aus lokalem Cache geladen: {display_name}")
                     return
                 except OSError:
                     continue
@@ -518,7 +617,9 @@ class MainWindow(QMainWindow):
             self.preview_worker.wait(500)
 
         client = self._get_client()
-        self.preview_worker = PreviewWorker(client=client, project=project, parent=self)
+        self.preview_worker = PreviewWorker(
+            client=client, project=project, file_path=file_path, parent=self
+        )
         self.preview_worker.loaded.connect(self._on_preview_loaded)
         self.preview_worker.failed.connect(self._on_preview_failed)
         self.preview_worker.start()
@@ -575,6 +676,7 @@ class MainWindow(QMainWindow):
             client=client,
             projects=selected_projects,
             output_dir=output_dir,
+            download_all_readmes=self.download_all_cb.isChecked(),
             parent=self,
         )
         self.active_worker.progress.connect(self._on_download_progress)

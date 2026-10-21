@@ -15,11 +15,13 @@ class PreviewWorker(QThread):
         self,
         client: GitLabClient,
         project: GitLabProject,
+        file_path: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.client = client
         self.project = project
+        self.file_path = file_path
 
     def run(self) -> None:
         """Fetch README and emit content as decoded string."""
@@ -30,6 +32,7 @@ class PreviewWorker(QThread):
 
             result = self.client.fetch_readme(
                 self.project,
+                file_path=self.file_path,
                 cancel_check=self.isInterruptionRequested,
             )
 

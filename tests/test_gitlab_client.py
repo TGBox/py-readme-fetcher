@@ -175,3 +175,84 @@ def test_verify_ssl_setting():
 
     client.get_group_projects("my-group")
     assert mock_session.get.call_args[1]["verify"] is False
+
+
+def test_is_readme_file():
+    from src.gitlab.client import is_readme_file
+
+    assert is_readme_file("README.md") is True
+    assert is_readme_file("README") is True
+    assert is_readme_file("readme.rst") is True
+    assert is_readme_file("docs/README.md") is True
+    assert is_readme_file("deep/nested/sub/README.txt") is True
+
+    # Ignored directories
+    assert is_readme_file("node_modules/pkg/README.md") is False
+    assert is_readme_file("vendor/bundle/README.md") is False
+    assert is_readme_file(".git/README.md") is False
+    assert is_readme_file("venv/lib/README.md") is False
+    assert is_readme_file(".venv/lib/README.md") is False
+    assert is_readme_file("dist/README.md") is False
+    assert is_readme_file("pkg.egg-info/README.txt") is False
+
+    # Non-readme files
+    assert is_readme_file("main.py") is False
+    assert is_readme_file("readme_helper.py") is False
+
+
+def test_compute_relative_target_path():
+    from pathlib import Path
+
+    from src.gitlab.client import compute_relative_target_path
+
+    path = compute_relative_target_path("org/team/data-chat", "client/README.md")
+    assert path == Path("org_team_data-chat") / "client" / "README.md"
+
+
+def test_discover_project_readmes():
+    mock_session = MagicMock(spec=requests.Session)
+    mock_res = MagicMock()
+    mock_res.status_code = 200
+    mock_res.headers = {}
+    mock_res.json.return_value = [
+        {"type": "blob", "path": "packages/client/README.md"},
+        {"type": "blob", "path": "node_modules/pkg/README.md"},
+        {"type": "blob", "path": "README.md"},
+        {"type": "blob", "path": "docs/README.rst"},
+        {"type": "blob", "path": "src/main.py"},
+    ]
+    mock_session.get.return_value = mock_res
+
+    client = GitLabClient(session=mock_session)
+    project = GitLabProject(
+        id=42,
+        name="DataChat",
+        path_with_namespace="org/data-chat",
+        default_branch="main",
+    )
+
+    readmes = client.discover_project_readmes(project)
+    # Root README first, then depth 1 (docs/), then depth 2 (packages/client/)
+    assert readmes == ["README.md", "docs/README.rst", "packages/client/README.md"]
+
+
+def test_fetch_file_content_url_encoded():
+    mock_session = MagicMock(spec=requests.Session)
+    mock_res = MagicMock()
+    mock_res.status_code = 200
+    mock_res.content = b"# Subfolder Content"
+    mock_session.get.return_value = mock_res
+
+    client = GitLabClient(base_url="https://gitlab.example.com", session=mock_session)
+    project = GitLabProject(
+        id=42,
+        name="DataChat",
+        path_with_namespace="org/data-chat",
+        default_branch="main",
+    )
+
+    content = client.fetch_file_content(project, "client/sub/README.md")
+    assert content == b"# Subfolder Content"
+
+    call_url = mock_session.get.call_args[0][0]
+    assert "client%2Fsub%2FREADME.md" in call_url
