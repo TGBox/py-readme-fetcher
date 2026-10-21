@@ -195,6 +195,10 @@ def test_is_readme_file():
     assert is_readme_file("dist/README.md") is False
     assert is_readme_file("pkg.egg-info/README.txt") is False
 
+    # Max depth check (depth <= 5 subfolders)
+    assert is_readme_file("a/b/c/d/e/README.md") is True
+    assert is_readme_file("a/b/c/d/e/f/README.md") is False
+
     # Non-readme files
     assert is_readme_file("main.py") is False
     assert is_readme_file("readme_helper.py") is False
@@ -295,40 +299,26 @@ def test_get_repository_tree_link_header_pagination():
     )
 
 
-def test_discover_project_readmes_deep_subfolder_probe():
-    """Verify that when root tree only lists directory trees (e.g. web, svc), subfolders are inspected."""
+def test_discover_project_readmes_depth_and_branch_support():
+    """Verify that tree blobs up to max_depth=5 are discovered, deeper are ignored, and custom ref is supported."""
     mock_session = MagicMock(spec=requests.Session)
 
-    # Root tree call: returns root README.md and directory trees for 'web' and 'svc'
-    res_root = MagicMock()
-    res_root.status_code = 200
-    res_root.links = {}
-    res_root.headers = {}
-    res_root.json.return_value = [
+    res_tree = MagicMock()
+    res_tree.status_code = 200
+    res_tree.links = {}
+    res_tree.headers = {}
+    res_tree.json.return_value = [
         {"type": "blob", "path": "README.md"},
-        {"type": "tree", "path": "web"},
-        {"type": "tree", "path": "svc"},
-    ]
-
-    # web tree call: returns web/README.md
-    res_web = MagicMock()
-    res_web.status_code = 200
-    res_web.links = {}
-    res_web.headers = {}
-    res_web.json.return_value = [
         {"type": "blob", "path": "web/README.md"},
-    ]
-
-    # svc tree call: returns svc/README.md
-    res_svc = MagicMock()
-    res_svc.status_code = 200
-    res_svc.links = {}
-    res_svc.headers = {}
-    res_svc.json.return_value = [
         {"type": "blob", "path": "svc/README.md"},
+        {"type": "blob", "path": "lvl1/lvl2/lvl3/lvl4/lvl5/README.md"},  # depth 5: allowed
+        {
+            "type": "blob",
+            "path": "lvl1/lvl2/lvl3/lvl4/lvl5/lvl6/README.md",
+        },  # depth 6: rejected (>5)
     ]
 
-    mock_session.get.side_effect = [res_root, res_web, res_svc]
+    mock_session.get.return_value = res_tree
 
     client = GitLabClient(base_url="https://gitlab.example.com", session=mock_session)
     project = GitLabProject(
@@ -338,8 +328,31 @@ def test_discover_project_readmes_deep_subfolder_probe():
         default_branch="main",
     )
 
-    readmes = client.discover_project_readmes(project)
+    # Test discovery on custom branch e.g. "develop"
+    readmes = client.discover_project_readmes(project, ref="develop")
     assert "README.md" in readmes
     assert "web/README.md" in readmes
     assert "svc/README.md" in readmes
+    assert "lvl1/lvl2/lvl3/lvl4/lvl5/README.md" in readmes
+    assert "lvl1/lvl2/lvl3/lvl4/lvl5/lvl6/README.md" not in readmes
     assert readmes[0] == "README.md"
+
+    # Verify ref parameter was passed to tree request
+    call_params = mock_session.get.call_args[1]["params"]
+    assert call_params["ref"] == "develop"
+
+
+def test_get_project_branches():
+    mock_session = MagicMock(spec=requests.Session)
+    mock_res = MagicMock()
+    mock_res.status_code = 200
+    mock_res.json.return_value = [
+        {"name": "main"},
+        {"name": "develop"},
+        {"name": "feature/ui"},
+    ]
+    mock_session.get.return_value = mock_res
+
+    client = GitLabClient(base_url="https://gitlab.example.com", session=mock_session)
+    branches = client.get_project_branches(42)
+    assert branches == ["main", "develop", "feature/ui"]

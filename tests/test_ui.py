@@ -183,3 +183,46 @@ def test_main_window_multi_readme_selector(qtbot):
     # Status column texts
     assert "✓ 1 README" in window.table.item(0, 3).text()
     assert "✓ 3 READMEs gefunden" in window.table.item(1, 3).text()
+
+
+def test_main_window_branch_override_and_editing(qtbot):
+    from unittest.mock import patch
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.branch_override_input.setText("develop")
+    window._save_settings()
+
+    window2 = MainWindow()
+    qtbot.addWidget(window2)
+    assert window2.branch_override_input.text() == "develop"
+
+    project = GitLabProject(
+        id=99,
+        name="DataChat",
+        path_with_namespace="org/data-chat",
+        default_branch="main",
+    )
+    window2._on_scan_finished([project])
+
+    # Check initial branch in table
+    assert window2.table.item(0, 2).text() == "main"
+    assert window2.table.item(0, 2).flags() & Qt.ItemFlag.ItemIsEditable
+
+    # Select project
+    window2.table.selectRow(0)
+    assert not window2.branch_input.isHidden()
+    assert window2.branch_input.text() == "main"
+
+    # Edit branch in preview input and apply
+    with patch.object(
+        window2._get_client(),
+        "discover_project_readmes",
+        return_value=["web/README.md", "svc/README.md"],
+    ):
+        window2.branch_input.setText("feature/new-branch")
+        window2._on_preview_branch_applied()
+
+        assert window2.projects[0].default_branch == "feature/new-branch"
+        assert window2.table.item(0, 2).text() == "feature/new-branch"

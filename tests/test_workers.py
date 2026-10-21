@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from src.gitlab.client import GitLabClient, GitLabProject
 from src.workers.download_worker import DownloadWorker
 from src.workers.preview_worker import PreviewWorker
-from src.workers.scan_worker import ScanWorker
+from src.workers.scan_worker import ProjectBranchWorker, ScanWorker
 
 
 def test_scan_worker_execution_fast_scan(qtbot):
@@ -187,4 +187,54 @@ def test_preview_worker_with_specific_file_path(qtbot):
     assert "Sub Header" in content
     mock_client.fetch_readme.assert_called_with(
         project, file_path="sub/README.md", cancel_check=worker.isInterruptionRequested
+    )
+
+
+def test_scan_worker_with_branch_override(qtbot):
+    mock_client = MagicMock(spec=GitLabClient)
+    sample_projects = [
+        GitLabProject(id=1, name="P1", path_with_namespace="g/p1", default_branch="main"),
+    ]
+    mock_client.get_group_projects.return_value = sample_projects
+    mock_client.discover_project_readmes.return_value = ["README.md"]
+
+    worker = ScanWorker(
+        client=mock_client,
+        group_id="my-group",
+        include_subgroups=True,
+        search_subfolders=True,
+        branch_override="develop",
+    )
+
+    with qtbot.waitSignal(worker.finished, timeout=2000) as blocker:
+        worker.start()
+
+    finished = blocker.args[0]
+    assert len(finished) == 1
+    assert finished[0].default_branch == "develop"
+
+
+def test_project_branch_worker(qtbot):
+    mock_client = MagicMock(spec=GitLabClient)
+    project = GitLabProject(
+        id=30, name="BranchProj", path_with_namespace="g/bp", default_branch="main"
+    )
+    mock_client.discover_project_readmes.return_value = ["README.md", "sub/README.md"]
+
+    worker = ProjectBranchWorker(
+        client=mock_client,
+        project=project,
+        branch="feature/docs",
+    )
+
+    with qtbot.waitSignal(worker.finished, timeout=2000) as blocker:
+        worker.start()
+
+    res_proj, readmes = blocker.args
+    assert res_proj.id == 30
+    assert readmes == ["README.md", "sub/README.md"]
+    mock_client.discover_project_readmes.assert_called_once_with(
+        project=project,
+        ref="feature/docs",
+        cancel_check=worker.isInterruptionRequested,
     )

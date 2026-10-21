@@ -1,8 +1,9 @@
 """Main application window for py-readme-fetcher."""
 
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QPoint, QSettings, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -12,9 +13,11 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -30,7 +33,7 @@ from src.gitlab.client import GitLabClient, GitLabProject
 from src.ui.theme import apply_theme
 from src.workers.download_worker import DownloadWorker
 from src.workers.preview_worker import PreviewWorker
-from src.workers.scan_worker import ScanWorker
+from src.workers.scan_worker import ProjectBranchWorker, ScanWorker
 
 
 class MainWindow(QMainWindow):
@@ -46,6 +49,7 @@ class MainWindow(QMainWindow):
         self.projects: list[GitLabProject] = []
         self.active_worker: ScanWorker | DownloadWorker | None = None
         self.preview_worker: PreviewWorker | None = None
+        self._branch_workers: list[ProjectBranchWorker] = []
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -143,7 +147,7 @@ class MainWindow(QMainWindow):
         self.search_subfolders_cb = QCheckBox("In Unterordnern nach READMEs suchen")
         self.search_subfolders_cb.setChecked(True)
         self.search_subfolders_cb.setToolTip(
-            "Durchsucht Repositories rekursiv auch nach README-Dateien in Unterverzeichnissen (z. B. data-chat/client/README.md)."
+            "Durchsucht Repositories rekursiv bis max. 5 Unterordner nach README-Dateien (z. B. data-chat/web/README.md)."
         )
         row3.addWidget(self.search_subfolders_cb)
 
@@ -153,7 +157,17 @@ class MainWindow(QMainWindow):
             "Lädt alle gefundenen READMEs eines Projekts herunter statt nur der Haupt-README (mit automatischem Fallback)."
         )
         row3.addWidget(self.download_all_cb)
-        row3.addStretch()
+
+        row3.addSpacing(16)
+        row3.addWidget(QLabel("Branch-Override:"))
+        self.branch_override_input = QLineEdit()
+        self.branch_override_input.setPlaceholderText(
+            "Optional: z. B. develop (Standard: Repo-Branch)"
+        )
+        self.branch_override_input.setToolTip(
+            "Optionaler Branch für alle Projekte. Wenn leer, wird der Standard-Branch des jeweiligen Repositories verwendet."
+        )
+        row3.addWidget(self.branch_override_input, stretch=1)
 
         config_layout.addLayout(row3)
         main_layout.addWidget(config_group)
@@ -221,7 +235,7 @@ class MainWindow(QMainWindow):
             [
                 "Auswahl",
                 "Projektpfad",
-                "Standard-Branch",
+                "Branch",
                 "Status",
             ]
         )
@@ -237,7 +251,10 @@ class MainWindow(QMainWindow):
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self.table.itemChanged.connect(self._on_table_item_changed)
         left_layout.addWidget(self.table)
 
         self.table_count_label = QLabel("Keine Projekte geladen.")
@@ -255,6 +272,25 @@ class MainWindow(QMainWindow):
         self.preview_title.setTextFormat(Qt.TextFormat.RichText)
         preview_header.addWidget(self.preview_title)
         preview_header.addStretch()
+
+        self.branch_label = QLabel("Branch:")
+        self.branch_label.setVisible(False)
+        preview_header.addWidget(self.branch_label)
+
+        self.branch_input = QLineEdit()
+        self.branch_input.setFixedWidth(110)
+        self.branch_input.setPlaceholderText("Branch...")
+        self.branch_input.setToolTip("Branch für dieses Projekt anpassen (Enter drücken)")
+        self.branch_input.returnPressed.connect(self._on_preview_branch_applied)
+        self.branch_input.setVisible(False)
+        preview_header.addWidget(self.branch_input)
+
+        self.branch_reload_btn = QPushButton("🔄")
+        self.branch_reload_btn.setToolTip("READMEs für diesen Branch neu abrufen")
+        self.branch_reload_btn.setFixedWidth(32)
+        self.branch_reload_btn.clicked.connect(self._on_preview_branch_applied)
+        self.branch_reload_btn.setVisible(False)
+        preview_header.addWidget(self.branch_reload_btn)
 
         self.readme_selector_label = QLabel("Datei:")
         self.readme_selector_label.setVisible(False)
@@ -374,6 +410,7 @@ class MainWindow(QMainWindow):
         self.download_all_cb.setChecked(
             self.settings.value("download_all_readmes", False, type=bool)
         )
+        self.branch_override_input.setText(self.settings.value("branch_override", "", type=str))
 
     def _save_settings(self) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
@@ -385,6 +422,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("include_subgroups", self.subgroups_cb.isChecked())
         self.settings.setValue("search_subfolders", self.search_subfolders_cb.isChecked())
         self.settings.setValue("download_all_readmes", self.download_all_cb.isChecked())
+        self.settings.setValue("branch_override", self.branch_override_input.text().strip())
         self.settings.setValue("save_token", self.save_token_cb.isChecked())
         self.settings.setValue("verify_ssl", self.ssl_verify_cb.isChecked())
 
@@ -424,6 +462,7 @@ class MainWindow(QMainWindow):
             group_id=group_id,
             include_subgroups=self.subgroups_cb.isChecked(),
             search_subfolders=self.search_subfolders_cb.isChecked(),
+            branch_override=self.branch_override_input.text().strip() or None,
             parent=self,
         )
         self.active_worker.progress.connect(self._on_scan_progress)
@@ -458,6 +497,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Scan abgeschlossen. {count} Projekte gefunden.")
 
     def _populate_table(self) -> None:
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         self.table.setRowCount(len(self.projects))
 
@@ -480,10 +520,15 @@ class MainWindow(QMainWindow):
             path_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             self.table.setItem(row, 1, path_item)
 
-            # Column 2: Default Branch
-            branch_text = proj.default_branch or "(leer)"
+            # Column 2: Branch (editable)
+            branch_text = proj.default_branch or ""
             branch_item = QTableWidgetItem(branch_text)
-            branch_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            branch_item.setToolTip("Doppelklick zum Ändern des Branches")
+            branch_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEditable
+            )
             self.table.setItem(row, 2, branch_item)
 
             # Column 3: Status
@@ -504,8 +549,133 @@ class MainWindow(QMainWindow):
             status_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             self.table.setItem(row, 3, status_item)
 
-        self.table.itemChanged.connect(self._update_selection_counter)
+        self.table.blockSignals(False)
         self._update_selection_counter()
+
+    def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0:
+            self._update_selection_counter()
+        elif item.column() == 2:
+            row = item.row()
+            if 0 <= row < len(self.projects):
+                new_branch = item.text().strip()
+                if new_branch and new_branch != self.projects[row].default_branch:
+                    self._change_project_branch(row, new_branch)
+
+    def _show_table_context_menu(self, pos: QPoint) -> None:
+        row = self.table.rowAt(pos.y())
+        if row < 0 or row >= len(self.projects):
+            return
+        project = self.projects[row]
+        menu = QMenu(self)
+
+        branch_action = menu.addAction(f"Branch ändern für '{project.name}'...")
+        open_action = menu.addAction("🌐 In GitLab öffnen") if project.web_url else None
+
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen == branch_action:
+            new_branch, ok = QInputDialog.getText(
+                self,
+                "Branch ändern",
+                f"Branch für Projekt '{project.name}' ({project.path_with_namespace}):",
+                QLineEdit.EchoMode.Normal,
+                project.default_branch or "main",
+            )
+            if ok and new_branch.strip():
+                self._change_project_branch(row, new_branch.strip())
+        elif open_action and chosen == open_action:
+            QDesktopServices.openUrl(QUrl(project.web_url))
+
+    def _on_preview_branch_applied(self) -> None:
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.projects):
+            return
+        new_branch = self.branch_input.text().strip()
+        if new_branch:
+            self._change_project_branch(row, new_branch)
+
+    def _change_project_branch(self, row: int, new_branch: str) -> None:
+        if row < 0 or row >= len(self.projects):
+            return
+        proj = self.projects[row]
+        if proj.default_branch == new_branch and proj.readme_files:
+            return
+
+        # Update local project representation
+        updated_proj = replace(proj, default_branch=new_branch, readme_files=())
+        self.projects[row] = updated_proj
+
+        # Update table display
+        self.table.blockSignals(True)
+        branch_item = self.table.item(row, 2)
+        if branch_item and branch_item.text() != new_branch:
+            branch_item.setText(new_branch)
+        status_item = self.table.item(row, 3)
+        if status_item:
+            status_item.setText(f"Lade '{new_branch}'...")
+        self.table.blockSignals(False)
+
+        # Update preview branch input if currently selected
+        if self.table.currentRow() == row:
+            self.branch_input.blockSignals(True)
+            self.branch_input.setText(new_branch)
+            self.branch_input.blockSignals(False)
+
+        self.status_label.setText(
+            f"Lade READMEs für '{proj.path_with_namespace}' auf Branch '{new_branch}'..."
+        )
+
+        client = self._get_client()
+        worker = ProjectBranchWorker(
+            client=client, project=updated_proj, branch=new_branch, parent=self
+        )
+        worker.finished.connect(
+            lambda p, r, r_idx=row: self._on_single_project_branch_finished(r_idx, p, r)
+        )
+        worker.error.connect(
+            lambda p, err, r_idx=row: self._on_single_project_branch_error(r_idx, p, err)
+        )
+        worker.start()
+        self._branch_workers.append(worker)
+
+    def _on_single_project_branch_finished(
+        self, row: int, project: GitLabProject, readmes: list[str]
+    ) -> None:
+        if 0 <= row < len(self.projects) and self.projects[row].id == project.id:
+            updated = replace(project, readme_files=tuple(readmes))
+            self.projects[row] = updated
+
+            self.table.blockSignals(True)
+            status_item = self.table.item(row, 3)
+            if status_item:
+                if readmes:
+                    status_text = (
+                        f"✓ 1 README ({readmes[0]})"
+                        if len(readmes) == 1
+                        else f"✓ {len(readmes)} READMEs gefunden"
+                    )
+                else:
+                    status_text = f"Keine README auf '{project.default_branch}'"
+                status_item.setText(status_text)
+            self.table.blockSignals(False)
+
+            if self.table.currentRow() == row:
+                self._update_preview_for_project(updated)
+
+            self.status_label.setText(
+                f"Branch für '{project.path_with_namespace}' auf '{project.default_branch}' gewechselt: {len(readmes)} READMEs gefunden."
+            )
+
+    def _on_single_project_branch_error(
+        self, row: int, project: GitLabProject, error_msg: str
+    ) -> None:
+        if 0 <= row < len(self.projects) and self.projects[row].id == project.id:
+            self.table.blockSignals(True)
+            status_item = self.table.item(row, 3)
+            if status_item:
+                status_item.setText("Fehler beim Branch-Scan")
+            self.table.blockSignals(False)
+            self.status_label.setText(f"Fehler bei {project.path_with_namespace}: {error_msg}")
 
     def _update_selection_counter(self) -> None:
         total = self.table.rowCount()
@@ -536,21 +706,7 @@ class MainWindow(QMainWindow):
                 matches = search in path_item.text().lower()
                 self.table.setRowHidden(row, not matches)
 
-    def _on_table_selection_changed(self) -> None:
-        row = self.table.currentRow()
-        if row < 0 or row >= len(self.projects):
-            self.preview_title.setText("<b>README Vorschau</b>")
-            self.open_web_btn.setEnabled(False)
-            self.readme_selector_label.setVisible(False)
-            self.readme_selector.setVisible(False)
-            self.preview_browser.clear()
-            return
-
-        project = self.projects[row]
-        self.preview_title.setText(f"<b>README Vorschau:</b> {project.path_with_namespace}")
-        self.open_web_btn.setEnabled(bool(project.web_url))
-
-        # Update readme selector combo box
+    def _update_preview_for_project(self, project: GitLabProject) -> None:
         self.readme_selector.blockSignals(True)
         self.readme_selector.clear()
         if project.readme_files:
@@ -568,6 +724,33 @@ class MainWindow(QMainWindow):
             self.readme_selector.currentData() if self.readme_selector.count() > 0 else None
         )
         self._load_readme_preview(project, selected_file)
+
+    def _on_table_selection_changed(self) -> None:
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.projects):
+            self.preview_title.setText("<b>README Vorschau</b>")
+            self.open_web_btn.setEnabled(False)
+            self.branch_label.setVisible(False)
+            self.branch_input.setVisible(False)
+            self.branch_reload_btn.setVisible(False)
+            self.readme_selector_label.setVisible(False)
+            self.readme_selector.setVisible(False)
+            self.preview_browser.clear()
+            return
+
+        project = self.projects[row]
+        self.preview_title.setText(f"<b>README Vorschau:</b> {project.path_with_namespace}")
+        self.open_web_btn.setEnabled(bool(project.web_url))
+
+        # Show and populate branch controls
+        self.branch_label.setVisible(True)
+        self.branch_input.setVisible(True)
+        self.branch_reload_btn.setVisible(True)
+        self.branch_input.blockSignals(True)
+        self.branch_input.setText(project.default_branch or "")
+        self.branch_input.blockSignals(False)
+
+        self._update_preview_for_project(project)
 
     def _on_readme_selector_changed(self, index: int) -> None:
         row = self.table.currentRow()
@@ -768,5 +951,10 @@ class MainWindow(QMainWindow):
         if self.preview_worker and self.preview_worker.isRunning():
             self.preview_worker.requestInterruption()
             self.preview_worker.wait(500)
+
+        for bw in self._branch_workers:
+            if bw.isRunning():
+                bw.requestInterruption()
+                bw.wait(300)
 
         super().closeEvent(event)

@@ -46,10 +46,17 @@ IGNORED_DIR_NAMES = frozenset(
 )
 
 
-def is_readme_file(path: str) -> bool:
-    """Check if a repository file path is a valid README file and not in an ignored dir."""
+MAX_SUBFOLDER_DEPTH = 5
+
+
+def is_readme_file(path: str, max_depth: int = MAX_SUBFOLDER_DEPTH) -> bool:
+    """Check if a repository file path is a valid README file and not in an ignored dir or too deep."""
     clean = path.replace("\\", "/").strip().strip("/")
     parts = clean.split("/")
+    subfolder_depth = len(parts) - 1
+    if subfolder_depth > max_depth:
+        return False
+
     for dir_name in parts[:-1]:
         dir_lower = dir_name.lower()
         if dir_lower in IGNORED_DIR_NAMES or dir_lower.endswith(".egg-info"):
@@ -250,7 +257,7 @@ class GitLabClient:
 
         all_items: list[dict] = []
         page = 1
-        max_pages = 100
+        max_pages = 25
 
         while next_url and page <= max_pages:
             if cancel_check and cancel_check():
@@ -293,16 +300,52 @@ class GitLabClient:
 
         return all_items
 
+    def get_project_branches(
+        self,
+        project_id: int | str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[str]:
+        """Fetch branch names for a project from GitLab."""
+        if cancel_check and cancel_check():
+            return []
+
+        encoded_id = urllib.parse.quote(str(project_id), safe="")
+        url = f"{self.base_url}/api/v4/projects/{encoded_id}/repository/branches"
+        headers = self._get_headers()
+
+        try:
+            response = self.session.get(
+                url,
+                headers=headers,
+                params={"per_page": 100},
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+            )
+            if response.status_code == 200:
+                items = response.json()
+                if isinstance(items, list):
+                    return [
+                        item.get("name")
+                        for item in items
+                        if isinstance(item, dict) and item.get("name")
+                    ]
+        except requests.RequestException:
+            pass
+
+        return []
+
     def discover_project_readmes(
         self,
         project: GitLabProject,
+        ref: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        max_depth: int = MAX_SUBFOLDER_DEPTH,
     ) -> list[str]:
-        """Find all README files in project repository, prioritizing root README and checking subdirectories."""
-        if not project.has_default_branch or project.empty_repo:
+        """Find all README files in project repository up to max_depth, prioritizing root README."""
+        branch = ref or project.default_branch
+        if not branch or project.empty_repo:
             return []
 
-        branch = project.default_branch or "main"
         items = self.get_repository_tree(
             project_id=project.id,
             ref=branch,
@@ -311,64 +354,20 @@ class GitLabClient:
         )
 
         found: list[str] = []
-        subdirectories: list[str] = []
 
         for item in items:
-            item_type = item.get("type")
-            file_path = item.get("path", "")
-            if not file_path:
-                continue
-
-            if item_type == "blob":
-                if is_readme_file(file_path) and file_path not in found:
-                    found.append(file_path)
-            elif item_type == "tree":
-                parts = file_path.replace("\\", "/").strip("/").split("/")
-                if not any(
-                    p.lower() in IGNORED_DIR_NAMES or p.lower().endswith(".egg-info") for p in parts
+            if item.get("type") == "blob":
+                file_path = item.get("path", "")
+                if (
+                    file_path
+                    and is_readme_file(file_path, max_depth=max_depth)
+                    and file_path not in found
                 ):
-                    subdirectories.append(file_path)
+                    found.append(file_path)
 
-        # Fallback inspection:
-        # If any discovered subdirectory does not yet have a found README,
-        # inspect it directly in case recursive=true was truncated by GitLab
-        for dir_path in subdirectories:
-            if cancel_check and cancel_check():
-                break
-            clean_dir = dir_path.replace("\\", "/").strip("/")
-            has_readme_in_dir = any(f.startswith(f"{clean_dir}/") for f in found)
-            if not has_readme_in_dir:
-                # Query sub-tree for this specific path
-                sub_items = self.get_repository_tree(
-                    project_id=project.id,
-                    ref=branch,
-                    path=clean_dir,
-                    recursive=True,
-                    cancel_check=cancel_check,
-                )
-                found_in_subtree = False
-                for sub_item in sub_items:
-                    if sub_item.get("type") == "blob":
-                        sub_file = sub_item.get("path", "")
-                        if sub_file and is_readme_file(sub_file) and sub_file not in found:
-                            found.append(sub_file)
-                            found_in_subtree = True
-
-                if not found_in_subtree:
-                    # Direct probe for standard README candidates in directory
-                    for cand in self.DEFAULT_README_CANDIDATES:
-                        probe_path = f"{clean_dir}/{cand}"
-                        content = self.fetch_file_content(
-                            project, probe_path, cancel_check=cancel_check
-                        )
-                        if content is not None:
-                            if probe_path not in found:
-                                found.append(probe_path)
-                            break
-
-        # Also probe standard root README if none was found at the root
-        if not any("/" not in f and "\\" not in f for f in found):
-            root_readme = self.fetch_readme(project, cancel_check=cancel_check)
+        # Probe standard root README only if tree query returned no items (e.g. tree endpoint failed/blocked)
+        if not found and not items:
+            root_readme = self.fetch_readme(project, ref=branch, cancel_check=cancel_check)
             if root_readme is not None:
                 root_name = root_readme[0]
                 if root_name not in found:
@@ -388,16 +387,17 @@ class GitLabClient:
         self,
         project: GitLabProject,
         file_path: str,
+        ref: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> bytes | None:
         """Fetch raw content of a specific file in the project."""
-        if not project.has_default_branch or project.empty_repo or not file_path:
+        branch = ref or project.default_branch
+        if not branch or project.empty_repo or not file_path:
             return None
 
         if cancel_check and cancel_check():
             return None
 
-        branch = project.default_branch
         headers = self._get_headers()
         encoded_file = urllib.parse.quote(file_path.strip().strip("/"), safe="")
         raw_url = (
@@ -455,14 +455,18 @@ class GitLabClient:
         self,
         project: GitLabProject,
         file_path: str | None = None,
+        ref: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[str, bytes] | None:
         """Attempt to fetch README content using smart fallback candidates or explicit path."""
-        if not project.has_default_branch or project.empty_repo:
+        branch = ref or project.default_branch
+        if not branch or project.empty_repo:
             return None
 
         if file_path:
-            content = self.fetch_file_content(project, file_path, cancel_check=cancel_check)
+            content = self.fetch_file_content(
+                project, file_path, ref=branch, cancel_check=cancel_check
+            )
             if content is not None:
                 return (file_path, content)
             return None
@@ -472,7 +476,9 @@ class GitLabClient:
             if cancel_check and cancel_check():
                 return None
 
-            content = self.fetch_file_content(project, candidate, cancel_check=cancel_check)
+            content = self.fetch_file_content(
+                project, candidate, ref=branch, cancel_check=cancel_check
+            )
             if content is not None:
                 return (candidate, content)
 

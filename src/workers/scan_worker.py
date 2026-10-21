@@ -20,6 +20,7 @@ class ScanWorker(QThread):
         group_id: str,
         include_subgroups: bool = True,
         search_subfolders: bool = True,
+        branch_override: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -27,6 +28,7 @@ class ScanWorker(QThread):
         self.group_id = group_id
         self.include_subgroups = include_subgroups
         self.search_subfolders = search_subfolders
+        self.branch_override = branch_override.strip() if branch_override else None
 
     def run(self) -> None:
         """Execute project scanning loop."""
@@ -51,6 +53,9 @@ class ScanWorker(QThread):
                 self.progress.emit(0, 0, "Scan abgebrochen.")
                 self.finished.emit([])
                 return
+
+            if self.branch_override:
+                projects = [replace(p, default_branch=self.branch_override) for p in projects]
 
             total_projects = len(projects)
             if not self.search_subfolders:
@@ -101,3 +106,35 @@ class ScanWorker(QThread):
             self.finished.emit(updated_projects)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
+
+
+class ProjectBranchWorker(QThread):
+    """Refreshes README discovery for a single project on a specific branch."""
+
+    finished = Signal(object, list)  # project, list[str] (discovered readmes)
+    error = Signal(object, str)  # project, error description
+
+    def __init__(
+        self,
+        client: GitLabClient,
+        project: GitLabProject,
+        branch: str,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.client = client
+        self.project = project
+        self.branch = branch
+
+    def run(self) -> None:
+        try:
+            readmes = self.client.discover_project_readmes(
+                project=self.project,
+                ref=self.branch,
+                cancel_check=self.isInterruptionRequested,
+            )
+            if self.isInterruptionRequested():
+                return
+            self.finished.emit(self.project, readmes)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(self.project, str(exc))
