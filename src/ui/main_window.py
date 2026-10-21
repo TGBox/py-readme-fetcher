@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
         row1.addWidget(QLabel("Access Token:"))
         self.token_input = QLineEdit()
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token_input.setPlaceholderText("glpat-xxxxxxxxxxxx (read_api)")
+        self.token_input.setPlaceholderText("GitLab Access Token (read_api)")
         row1.addWidget(self.token_input, stretch=2)
 
         self.toggle_token_btn = QPushButton("👁️")

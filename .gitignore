@@ -1,5 +1,39 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
 .venv/
+env/
+venv/
+ENV/
+
+# Distribution / Build
+build/
 dist/
+*.egg-info/
+*.spec
+
+# Testing & Linting
+.pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+
+# Local Data / Secrets / Downloads
+readmes/
+*.env
+*.env.*
+.env
+example.py
+
+# IDEs & System
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
