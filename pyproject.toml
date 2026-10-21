@@ -1,11 +1,12 @@
 [project]
 name = "py-readme-fetcher"
-version = "0.1.0"
+version = "0.2.0"
 description = "A python app to fetch all README.md files of all the repositories from a given GitLab Group."
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "pyside6",
+    "requests>=2.34.2",
 ]
 
 [project.scripts]
@@ -21,6 +22,7 @@ dev = [
     "pytest>=8.0",
     "pyinstaller>=6.0",
     "ruff>=0.6",
+    "pytest-qt>=4.5.0",
 ]
 
 [build-system]

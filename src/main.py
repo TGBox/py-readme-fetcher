@@ -1,22 +1,22 @@
+"""Application entry point for py-readme-fetcher."""
+
 import sys
-from PySide6.QtWidgets import QApplication, QMainWindow, QLabel
-from PySide6.QtCore import Qt
 
+from PySide6.QtWidgets import QApplication
 
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("py-readme-fetcher")
-        self.resize(800, 600)
-        label = QLabel("Hallo aus py-readme-fetcher!", alignment=Qt.AlignmentFlag.AlignCenter)
-        self.setCentralWidget(label)
+from src.ui.main_window import MainWindow
 
 
 def main() -> None:
+    """Initialize and run the PySide6 application."""
     app = QApplication(sys.argv)
+    app.setApplicationName("py-readme-fetcher")
+    app.setOrganizationName("py-readme-fetcher")
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
